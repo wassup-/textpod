@@ -8,3 +8,5 @@ services:
             - './notes:/app/notes'
         container_name: textpod
         restart: unless-stopped
+        environment:
+            - TZ=UTC
