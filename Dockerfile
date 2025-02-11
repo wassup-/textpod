@@ -10,6 +10,9 @@ COPY --from=build /usr/local/cargo/bin/monolith /usr/bin/monolith
 
 RUN apk add --no-cache tzdata curl
 
+RUN apk add --no-cache wget python3 ffmpeg
+RUN wget -O /usr/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && chmod a+rx /usr/bin/yt-dlp
+
 WORKDIR /app/notes
 
 HEALTHCHECK --interval=60s --retries=3 --timeout=1s \

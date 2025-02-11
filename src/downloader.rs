@@ -13,7 +13,11 @@ pub async fn download_link<D>(url: &str, delegate: D)
 where
     D: Delegate,
 {
-    download_webpage(url, delegate).await
+    if util::is_video_url(url).await {
+        download_video(url, delegate).await
+    } else {
+        download_webpage(url, delegate).await
+    }
 }
 
 async fn download_webpage<D>(url: &str, delegate: D)
@@ -43,7 +47,56 @@ where
     }
 }
 
+async fn download_video<D>(url: &str, delegate: D)
+where
+    D: Delegate,
+{
+    info!("Downloading video {}", url);
+
+    let videos_dir = delegate.attachments_dir().join("videos");
+    std::fs::create_dir_all(&videos_dir).unwrap();
+
+    let filepath_template = videos_dir.join("%(id)s.%(ext)s");
+    let filepath_template = filepath_template.to_string_lossy();
+
+    let result = Command::new("yt-dlp")
+        .args(&[
+            "--print",
+            "after_move:filepath",
+            "-o",
+            &filepath_template,
+            "--restrict-filenames",
+            url,
+        ])
+        .output()
+        .await;
+
+    match result {
+        Err(err) => error!("failed to download video {}: {}", url, err),
+        Ok(output) => {
+            let filepath = String::from_utf8(output.stdout).unwrap();
+            info!("Downloaded video {} to {}", url, filepath);
+            let filepath = PathBuf::from(filepath);
+            delegate.update_local_link(url, &filepath);
+        }
+    }
+}
+
 mod util {
+
+    use tokio::process::Command;
+
+    pub async fn is_video_url(url: &str) -> bool {
+        let status = Command::new("yt-dlp")
+            .args(&["--simulate", url, "--use-extractors", "default,-generic"])
+            .status()
+            .await;
+
+        match status {
+            Ok(status) if status.success() => true,
+            _ => false,
+        }
+    }
 
     pub fn url_to_safe_filename(url: &str) -> String {
         let mut safe_name = String::with_capacity(url.len());
@@ -57,12 +110,13 @@ mod util {
 
         for c in stripped_url.chars() {
             match c {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => safe_name.push('_'),
                 c if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' => safe_name.push(c),
                 _ => safe_name.push('_'),
             }
         }
 
-        safe_name.trim_matches(|c| c == '.' || c == ' ').to_string()
+        safe_name
+            .trim_matches(|c: char| c == '.' || c.is_whitespace())
+            .to_string()
     }
 }
