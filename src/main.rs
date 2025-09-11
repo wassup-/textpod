@@ -118,6 +118,7 @@ mod routes {
 
     use super::{
         downloader,
+        models::NoteContent,
         note::{Note, NoteId, NotesBackend},
         AppState, DownloaderDelegate,
     };
@@ -176,11 +177,9 @@ mod routes {
         State(state): State<AppState>,
         Json(content): Json<String>,
     ) -> Result<(), StatusCode> {
-        let mut content = content;
-        // Replace "---" with "<hr>" in the content
-        content = content.replace("---", "<hr>");
+        let content = NoteContent::from_raw(content);
 
-        let note = match state.backend.create_note(content) {
+        let note = match state.backend.create_note(content.to_markdown()) {
             Ok(note) => note,
             Err(err) => {
                 error!("Failed to save note: {}", err);
@@ -190,17 +189,7 @@ mod routes {
 
         info!("Note created: {}", note.id);
 
-        let links_to_download: Vec<String> = note
-            .content
-            .split_whitespace()
-            .filter(|word| word.starts_with("+http"))
-            .map(|s| s.to_owned())
-            .collect();
-
-        for link in links_to_download {
-            // drop the '+' from the front of the link
-            let link = link[1..].to_owned();
-
+        for link in content.links_to_download() {
             let delegate = DownloaderDelegate {
                 backend: state.backend.clone(),
                 note_id: note.id,
@@ -265,6 +254,59 @@ mod routes {
     }
 }
 
+mod models {
+
+    use crate::note::Markdown;
+
+    pub struct NoteContent {
+        raw: String,
+    }
+
+    impl NoteContent {
+        pub fn from_raw(raw: String) -> Self {
+            NoteContent { raw }
+        }
+
+        pub fn to_markdown(&self) -> Markdown {
+            let mut content = self.raw.clone();
+            // Replace "---" with "<hr>" in the content
+            content = content.replace("---", "<hr>");
+            content.parse().unwrap()
+        }
+
+        pub fn links_to_download(&self) -> Vec<String> {
+            self.raw
+                .split_whitespace()
+                .filter(|word| word.starts_with("+http"))
+                // drop the '+' from the front of the link
+                .map(|link| link[1..].to_owned())
+                .collect()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+
+        #[test]
+        fn test_detect_links_to_download() {
+            let content = NoteContent::from_raw(
+                concat!(
+                    "http://localhost\n",
+                    "+http://example.com\n",
+                    "+https://example.com/?a=b&c\n",
+                )
+                .to_owned(),
+            );
+            assert_eq!(
+                content.links_to_download(),
+                vec!["http://example.com", "https://example.com/?a=b&c"]
+            );
+        }
+
+        use super::*;
+    }
+}
+
 struct DownloaderDelegate<B>
 where
     B: NotesBackend,
@@ -296,16 +338,48 @@ where
             return;
         };
 
-        let local_link = format!("/attachments/{}", relative_path.display());
-        let new_content = note.content.replace(
-            &format!("+{external_link}"),
-            &format!("{external_link} ([local copy]({local_link}))"),
+        let mut content = note.content;
+        content.update_local_link(
+            external_link,
+            &format!("/attachments/{}", relative_path.display()),
         );
 
-        if let Err(err) = self.backend.update_note(note.id, new_content) {
+        if let Err(err) = self.backend.update_note(note.id, content) {
             error!("Failed to update note {}: {}", note.id, err);
         } else {
             debug!("Note updated: {}", note.id);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_downloader_delegate() {
+        let delegate = DownloaderDelegate {
+            backend: YamlBackend::test(vec![Note {
+                id: NoteId(1),
+                timestamp: "".to_owned(),
+                content: "+http://foo.bar".parse().unwrap(),
+                html: "".parse().unwrap(),
+            }]),
+            note_id: NoteId(1),
+            attachments_dir: "/app/notes/attachments".into(),
+        };
+
+        delegate.update_local_link(
+            "http://foo.bar",
+            &PathBuf::from("/app/notes/attachments/foo/bar"),
+        );
+
+        let note = delegate.backend.get_note_by_id(NoteId(1)).unwrap();
+        assert_eq!(
+            note.content.to_string(),
+            "http://foo.bar ([local copy](/attachments/foo/bar))"
+        );
+    }
+
+    use super::*;
+    use crate::{downloader::Delegate, note::Note};
 }

@@ -1,6 +1,10 @@
 pub mod backends;
+mod html;
+mod markdown;
 mod util;
 
+pub use html::Html;
+pub use markdown::Markdown;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -11,8 +15,8 @@ pub struct NoteId(pub usize);
 pub struct Note {
     pub id: NoteId,
     pub timestamp: String,
-    pub content: String,
-    pub html: String,
+    pub content: Markdown,
+    pub html: Html,
 }
 
 #[derive(Debug)]
@@ -23,9 +27,9 @@ pub enum NotesError {
 
 pub trait NotesBackend {
     /// Creates a new note.
-    fn create_note(&self, content: String) -> Result<Note, NotesError>;
+    fn create_note(&self, content: Markdown) -> Result<Note, NotesError>;
     /// Updates an existing note.
-    fn update_note(&self, note_id: NoteId, content: String) -> Result<(), NotesError>;
+    fn update_note(&self, note_id: NoteId, content: Markdown) -> Result<(), NotesError>;
     /// Deletes an existing note.
     fn delete_note(&self, note_id: NoteId) -> Result<(), NotesError>;
 

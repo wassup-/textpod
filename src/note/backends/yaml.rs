@@ -1,4 +1,4 @@
-use crate::note::{util, Note, NoteId, NotesBackend, NotesError};
+use crate::note::{util, Html, Markdown, Note, NoteId, NotesBackend, NotesError};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -6,8 +6,8 @@ use std::{
 
 #[derive(Clone, Debug)]
 struct NoteData {
-    pub content: String,
-    pub html: String,
+    pub content: Markdown,
+    pub html: Html,
 }
 
 #[derive(Debug)]
@@ -17,14 +17,13 @@ struct State {
 
 #[derive(Clone, Debug)]
 pub struct YamlBackend {
-    path: PathBuf,
+    path: Option<PathBuf>,
     state: Arc<Mutex<State>>,
 }
 
 struct YamlNote {
     timestamp: String,
     content: String,
-    html: String,
 }
 
 impl NoteId {
@@ -35,6 +34,14 @@ impl NoteId {
 }
 
 impl YamlBackend {
+    #[cfg(test)]
+    pub fn test(notes: Vec<Note>) -> Self {
+        YamlBackend {
+            path: None,
+            state: Arc::new(Mutex::new(State::new(notes))),
+        }
+    }
+
     pub fn load(path: PathBuf) -> Self {
         let yaml_notes = if let Ok(content) = std::fs::read_to_string(&path) {
             content
@@ -49,11 +56,10 @@ impl YamlBackend {
                         _ => (util::local_timestamp(), block.to_string()),
                     };
 
-                    let html = util::md_to_html(&content);
+                    let content: Markdown = content.parse().unwrap();
                     YamlNote {
                         timestamp,
                         content: content.to_string(),
-                        html,
                     }
                 })
                 .collect()
@@ -64,25 +70,33 @@ impl YamlBackend {
         let notes = yaml_notes
             .into_iter()
             .enumerate()
-            .map(|(idx, note)| Note {
-                id: NoteId(idx),
-                timestamp: note.timestamp,
-                content: note.content,
-                html: note.html,
+            .map(|(idx, note)| {
+                let content: Markdown = note.content.parse().unwrap();
+
+                Note {
+                    id: NoteId(idx),
+                    timestamp: note.timestamp,
+                    html: content.to_html(),
+                    content,
+                }
             })
             .collect();
 
         YamlBackend {
-            path,
+            path: Some(path),
             state: Arc::new(Mutex::new(State::new(notes))),
         }
     }
 
     fn append_note_to_file(&self, note: &Note) -> Result<(), NotesError> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
+            .open(path)
             .map_err(NotesError::Io)?;
         append_note_to_file(note, &mut file).map_err(NotesError::Io)
     }
@@ -91,11 +105,15 @@ impl YamlBackend {
     where
         I: Iterator<Item = &'a Note>,
     {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&self.path)
+            .open(path)
             .map_err(NotesError::Io)?;
 
         for note in notes {
@@ -107,9 +125,9 @@ impl YamlBackend {
 }
 
 impl NotesBackend for YamlBackend {
-    fn create_note(&self, content: String) -> Result<Note, NotesError> {
+    fn create_note(&self, content: Markdown) -> Result<Note, NotesError> {
         let data = NoteData {
-            html: util::md_to_html(&content),
+            html: content.to_html(),
             content,
         };
 
@@ -122,9 +140,9 @@ impl NotesBackend for YamlBackend {
         Ok(note)
     }
 
-    fn update_note(&self, note_id: NoteId, content: String) -> Result<(), NotesError> {
+    fn update_note(&self, note_id: NoteId, content: Markdown) -> Result<(), NotesError> {
         let data = NoteData {
-            html: util::md_to_html(&content),
+            html: content.to_html(),
             content,
         };
 
@@ -217,4 +235,28 @@ where
     F: std::io::Write,
 {
     write!(file, "{}\n{}\n\n---\n\n", note.timestamp, note.content)
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_append_note_to_file() {
+        let mut output = Vec::new();
+
+        append_note_to_file(
+            &Note {
+                id: NoteId(0),
+                timestamp: "foo".to_owned(),
+                content: "bar".parse().unwrap(),
+                html: "baz".parse().unwrap(),
+            },
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(output, "foo\nbar\n\n---\n\n".as_bytes());
+    }
+
+    use super::*;
 }
